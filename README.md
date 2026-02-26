@@ -7,7 +7,7 @@ Standalone desktopová aplikace pro kryptografické podepisování PML evidenčn
 ```
 Browser (Flutter Web SPA)
     │
-    │  HTTPS REST (localhost:14725)
+    │  HTTP REST (localhost:14725)
     ▼
 ┌─────────────────────┐
 │   pmlio-helper      │

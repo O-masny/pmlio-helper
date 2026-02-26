@@ -1,13 +1,12 @@
 /**
- * Localhost HTTPS Server (Express)
+ * Localhost HTTP Server (Express)
  *
- * Listens on 127.0.0.1:14725 with a self-signed certificate.
+ * Listens on 127.0.0.1:14725 (plain HTTP — localhost is a W3C "trustworthy origin").
  * Provides /health, /certificates, and /sign endpoints.
  */
 const express = require('express');
-const https = require('https');
+const http = require('http');
 const cors = require('cors');
-const { ensureCerts } = require('./cert-store');
 const { validateChallengeJwt } = require('./jwt-validator');
 const pkcs11 = require('./pkcs11'); // Require the whole module to access signHashes easily
 const { listCertificates, signHash, getReaderStatus } = pkcs11;
@@ -181,12 +180,11 @@ function createApp() {
 
 async function startServer() {
     const app = createApp();
-    const { key, cert } = ensureCerts();
 
     return new Promise((resolve, reject) => {
-        server = https.createServer({ key, cert }, app);
+        server = http.createServer(app);
         server.listen(PORT, HOST, () => {
-            console.log(`[Server] Listening on https://${HOST}:${PORT}`);
+            console.log(`[Server] Listening on http://${HOST}:${PORT}`);
             resolve(server);
         });
         server.on('error', reject);

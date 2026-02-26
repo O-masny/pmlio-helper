@@ -35,7 +35,7 @@ app.whenReady().then(async () => {
   let server = null;
   try {
     server = await startServer();
-    console.log('[PMLio Helper] Server on https://127.0.0.1:14725');
+    console.log('[PMLio Helper] Server on http://127.0.0.1:14725');
   } catch (err) {
     console.error('[PMLio Helper] Server failed to start:', err.message);
   }

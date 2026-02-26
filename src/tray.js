@@ -87,20 +87,40 @@ function getIconPath(status) {
  */
 function showCertificates() {
     const { dialog } = require('electron');
-    const { listCertificates } = require('./pkcs11');
+    const { listCertificates, getReaderStatus } = require('./pkcs11');
 
-    listCertificates().then(certs => {
-        const message = certs.length > 0
-            ? certs.map(c => `• ${c.subject_cn} (${c.issuer_cn})`).join('\n')
-            : 'Žádné certifikáty nalezeny na tokenu.';
-
+    const status = getReaderStatus();
+    if (!status.readerConnected) {
         dialog.showMessageBox({
-            type: 'info',
+            type: 'warning',
             title: 'PMLio Helper — Certifikáty',
-            message: 'Dostupné certifikáty:',
-            detail: message,
+            message: 'Žádná čtečka není připojena',
+            detail: 'Připojte USB token / čtečku čipových karet a zkuste to znovu.',
         });
-    });
+        return;
+    }
+
+    listCertificates()
+        .then(certs => {
+            const message = certs.length > 0
+                ? certs.map(c => `• ${c.subject_cn} (${c.issuer_cn})`).join('\n')
+                : 'Žádné certifikáty nalezeny na tokenu.';
+
+            dialog.showMessageBox({
+                type: 'info',
+                title: 'PMLio Helper — Certifikáty',
+                message: 'Dostupné certifikáty:',
+                detail: message,
+            });
+        })
+        .catch(err => {
+            dialog.showMessageBox({
+                type: 'error',
+                title: 'PMLio Helper — Chyba',
+                message: 'Nepodařilo se načíst certifikáty',
+                detail: err.message || 'Neznámá chyba při komunikaci s čtečkou.',
+            });
+        });
 }
 
 module.exports = { createTray, updateTrayStatus };

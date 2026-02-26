@@ -1,7 +1,7 @@
 /**
  * Integration Tests — Server API Endpoints
  *
- * Tests the full Express server with mock PKCS#11.
+ * Tests the full Express server (plain HTTP) with mock PKCS#11.
  * Runs WITHOUT Electron (pure Node.js).
  */
 
@@ -9,53 +9,18 @@
 process.env.NODE_ENV = 'test';
 process.env.PMLIO_MOCK_PKCS11 = 'true';
 
-// Pre-generate certs before mocking (avoids Jest module resolution issues)
+// Generate RSA key pair for JWT signing/verification in tests
 const crypto = require('crypto');
-const { generateKeyPairSync, createSign, createCertificate } = crypto;
+const { generateKeyPairSync } = crypto;
 
-function generateSelfSignedCert() {
-    // Use Node's built-in crypto for a self-signed cert
-    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
-        modulusLength: 2048,
-        publicKeyEncoding: { type: 'spki', format: 'pem' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    });
+const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
 
-    // For supertest we just need valid PEM key/cert strings
-    // We'll create a minimal self-signed cert using node-forge
-    // But require it HERE (before jest.mock) to avoid resolution issues
-    const forge = require('node-forge');
-    const keys = forge.pki.rsa.generateKeyPair(2048);
-    const cert = forge.pki.createCertificate();
-    cert.publicKey = keys.publicKey;
-    cert.serialNumber = '01';
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 1);
-    const attrs = [{ name: 'commonName', value: 'localhost' }];
-    cert.setSubject(attrs);
-    cert.setIssuer(attrs);
-    cert.sign(keys.privateKey, forge.md.sha256.create());
-
-    return {
-        key: forge.pki.privateKeyToPem(keys.privateKey),
-        cert: forge.pki.certificateToPem(cert),
-    };
-}
-
-const mockTestCerts = generateSelfSignedCert();
-
-// Mock cert-store AFTER generating certs
-// Mock cert-store with static dummy certs
-jest.mock('../../src/cert-store', () => ({
-    ensureCerts: () => ({
-        key: mockTestCerts.key,
-        cert: mockTestCerts.cert,
-    }),
-}));
-
-process.env.PMLIO_JWT_PUBLIC_KEY = mockTestCerts.cert;
-process.env.PMLIO_JWT_PRIVATE_KEY = mockTestCerts.key;
+process.env.PMLIO_JWT_PUBLIC_KEY = publicKey;
+process.env.PMLIO_JWT_PRIVATE_KEY = privateKey;
 
 const { createApp } = require('../../src/server');
 const { createTestJwt, resetJtiStore } = require('../../src/jwt-validator');
@@ -161,7 +126,6 @@ describe('POST /sign-many', () => {
     const TEST_HASH_2 = 'abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
     test('signs multiple hashes with valid batch JWT', async () => {
-        // Create a custom test JWT directly because createTestJwt only mocks a single hash claim
         const jwt = require('jsonwebtoken');
         const token = jwt.sign(
             {
@@ -169,7 +133,7 @@ describe('POST /sign-many', () => {
                 jti: BATCH_SESSION_ID,
                 tenant_domain: 'test.pmlio.cz'
             },
-            mockTestCerts.key,
+            privateKey,
             {
                 algorithm: 'RS256',
                 audience: 'pmlio-signing',
@@ -210,7 +174,7 @@ describe('POST /sign-many', () => {
                 jti: BATCH_SESSION_ID,
                 tenant_domain: 'test.pmlio.cz'
             },
-            mockTestCerts.key,
+            privateKey,
             {
                 algorithm: 'RS256',
                 audience: 'pmlio-signing',
