@@ -3,19 +3,30 @@ productName: PMLio Helper
 directories:
   output: dist
 
+# Auto-publish to GitHub Releases on tagged builds
+publish:
+  provider: github
+  owner: O-masny
+  repo: pmlio-helper
+  releaseType: release
+
 win:
   target: nsis
   icon: assets/icon.ico
+  artifactName: pmlio-helper-setup-${version}.${ext}
 
 mac:
   target: dmg
-  icon: assets/icon.icns
+  icon: assets/icon.png
   category: public.app-category.utilities
+  artifactName: pmlio-helper-${version}.${ext}
 
 nsis:
   oneClick: true
   perMachine: false
   allowToChangeInstallationDirectory: false
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
 
 files:
   - src/**/*
