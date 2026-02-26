@@ -5,6 +5,8 @@
  * Enforces audience, expiration, and replay protection.
  */
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * In-memory set of used JTIs for replay protection.
@@ -14,17 +16,48 @@ const usedJtis = new Map(); // jti -> timestamp
 const JTI_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Public key from PMLio backend for verifying challenge JWTs using RS256.
- * In a production environment, this should be securely deployed alongside the helper.
+ * Load the RS256 public key for JWT verification.
+ *
+ * Priority:
+ *  1. Bundled file: resources/jwt-public.pem (shipped inside .exe / .dmg)
+ *  2. Environment variable: PMLIO_JWT_PUBLIC_KEY (for dev / CI)
+ *  3. Test mode: uses test-injected key from PMLIO_JWT_PUBLIC_KEY env
  */
-const JWT_PUBLIC_KEY = process.env.PMLIO_JWT_PUBLIC_KEY;
+function loadPublicKey() {
+    // In test mode, use whatever is injected (may be a PEM cert for supertest)
+    if (process.env.NODE_ENV === 'test') {
+        return process.env.PMLIO_JWT_PUBLIC_KEY || 'MOCK_PUBLIC_KEY';
+    }
 
-if (!JWT_PUBLIC_KEY && process.env.NODE_ENV !== 'test') {
-    console.error('CRITICAL: Missing PMLIO_JWT_PUBLIC_KEY environment variable. Challenge JWT cannot be validated.');
+    // Try bundled file first (works in Electron packaged app)
+    const bundledPaths = [
+        // Electron packaged app: resources are next to app.asar
+        path.join(process.resourcesPath || '', 'jwt-public.pem'),
+        // Development: relative to project root
+        path.join(__dirname, '..', 'resources', 'jwt-public.pem'),
+    ];
+
+    for (const p of bundledPaths) {
+        try {
+            if (fs.existsSync(p)) {
+                const key = fs.readFileSync(p, 'utf8');
+                console.log(`[JWT] Loaded public key from: ${p}`);
+                return key;
+            }
+        } catch (_) { /* try next */ }
+    }
+
+    // Fallback: environment variable (for docker / CI / dev)
+    if (process.env.PMLIO_JWT_PUBLIC_KEY) {
+        console.log('[JWT] Loaded public key from PMLIO_JWT_PUBLIC_KEY env var');
+        return process.env.PMLIO_JWT_PUBLIC_KEY;
+    }
+
+    console.error('CRITICAL: No JWT public key found. Place jwt-public.pem in resources/ or set PMLIO_JWT_PUBLIC_KEY.');
     process.exit(1);
 }
-// For tests, use a dummy key if none provided
-const PUBLIC_KEY_TO_USE = JWT_PUBLIC_KEY || 'MOCK_PUBLIC_KEY';
+
+const PUBLIC_KEY_TO_USE = loadPublicKey();
 
 const JWT_AUDIENCE = 'pmlio-signing'; // Matches the audience set by the PHP backend
 

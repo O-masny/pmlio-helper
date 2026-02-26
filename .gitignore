@@ -1,3 +1,4 @@
+# Ignore node modules, build output, env files, PEM keys, PKCS12, certs
 node_modules/
 dist/
 .env

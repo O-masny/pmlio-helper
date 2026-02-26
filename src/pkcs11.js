@@ -189,12 +189,20 @@ async function signHash(hash, certificateId) {
         throw new Error('PKCS#11 not initialized');
     }
 
-    const pin = process.env.PMLIO_PKCS11_PIN || '';
     const slot = pkcs11Module.C_GetSlotList(true)[0];
-    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
+    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION | pkcs11js.CKF_RW_SESSION);
     try {
-        // Login (user type: CKU_USER)
-        pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        // Login — SafeNet tokens support protected authentication path,
+        // which triggers the native PIN dialog automatically.
+        // Fallback to env var PIN for headless / CI environments.
+        const tokenInfo = pkcs11Module.C_GetTokenInfo(slot);
+        const hasProtectedAuth = (tokenInfo.flags & 0x100) !== 0; // CKF_PROTECTED_AUTHENTICATION_PATH
+        if (hasProtectedAuth) {
+            pkcs11Module.C_Login(session, pkcs11js.CKU_USER, null);
+        } else {
+            const pin = process.env.PMLIO_PKCS11_PIN || '';
+            pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        }
         // Find private key by CKA_ID matching the certificateId (hex string)
         const idBuffer = Buffer.from(certificateId, 'hex');
         pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
@@ -250,11 +258,17 @@ async function signHashes(hashes, certificateId) {
         throw new Error('PKCS#11 not initialized');
     }
 
-    const pin = process.env.PMLIO_PKCS11_PIN || '';
     const slot = pkcs11Module.C_GetSlotList(true)[0];
-    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
+    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION | pkcs11js.CKF_RW_SESSION);
     try {
-        pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        const tokenInfo = pkcs11Module.C_GetTokenInfo(slot);
+        const hasProtectedAuth = (tokenInfo.flags & 0x100) !== 0;
+        if (hasProtectedAuth) {
+            pkcs11Module.C_Login(session, pkcs11js.CKU_USER, null);
+        } else {
+            const pin = process.env.PMLIO_PKCS11_PIN || '';
+            pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        }
         const idBuffer = Buffer.from(certificateId, 'hex');
         pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
         const keyHandles = pkcs11Module.C_FindObjects(session, 1);

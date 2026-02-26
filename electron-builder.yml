@@ -33,3 +33,8 @@ files:
   - assets/**/*
   - node_modules/**/*
   - package.json
+
+# Bundle the JWT public key into process.resourcesPath
+extraResources:
+  - from: resources/jwt-public.pem
+    to: jwt-public.pem
