@@ -23,21 +23,31 @@ if (process.platform === 'darwin') {
 app.whenReady().then(async () => {
   console.log('[PMLio Helper] Starting...');
 
-  // 1. Initialize PKCS#11 (detect readers)
-  const pkcs11Ready = await initPkcs11();
+  // 1. Initialize PKCS#11 (detect readers) — non-fatal
+  let pkcs11Ready = false;
+  try {
+    pkcs11Ready = await initPkcs11();
+  } catch (err) {
+    console.warn('[PMLio Helper] PKCS#11 init failed (non-fatal):', err.message);
+  }
 
   // 2. Start localhost server
-  const server = await startServer();
+  let server = null;
+  try {
+    server = await startServer();
+    console.log('[PMLio Helper] Server on https://127.0.0.1:14725');
+  } catch (err) {
+    console.error('[PMLio Helper] Server failed to start:', err.message);
+  }
 
-  // 3. Create system tray
+  // 3. Create system tray (always — even if hardware is missing)
   createTray();
 
   // 4. Update tray based on reader status
   const status = getReaderStatus();
-  updateTrayStatus(status.readerConnected ? 'connected' : 'idle');
+  updateTrayStatus(server ? (status.readerConnected ? 'connected' : 'idle') : 'error');
 
-  console.log(`[PMLio Helper] Ready. Server on https://127.0.0.1:14725`);
-  console.log(`[PMLio Helper] PKCS#11: ${pkcs11Ready ? 'OK' : 'No reader found'}`);
+  console.log(`[PMLio Helper] Ready. PKCS#11: ${pkcs11Ready ? 'OK' : 'No reader found'}`);
 });
 
 app.on('window-all-closed', (e) => {
