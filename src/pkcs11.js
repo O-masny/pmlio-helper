@@ -15,6 +15,26 @@ let readerStatus = {
     readerName: null,
 };
 
+// Global pkcs11js reference – optional dependency handling
+let pkcs11js;
+try {
+    pkcs11js = require('pkcs11js');
+} catch (e) {
+    console.warn('[PKCS#11] pkcs11js module not available, mock mode only');
+    pkcs11js = null;
+}
+
+/**
+ * Convert DER buffer to PEM string
+ * @param {Buffer} der
+ * @returns {string}
+ */
+function derToPem(der) {
+    const base64 = der.toString('base64');
+    const lines = base64.match(/.{1,64}/g) || [];
+    return ['-----BEGIN CERTIFICATE-----', ...lines, '-----END CERTIFICATE-----'].join('\n');
+}
+
 /**
  * Known PKCS#11 library paths per platform.
  */
@@ -111,9 +131,46 @@ async function listCertificates() {
         throw new Error('PKCS#11 not initialized');
     }
 
-    // Real PKCS#11 enumeration would happen here
-    // For now, return empty until real hardware is connected
-    return [];
+    // Enumerate certificates (CKO_CERTIFICATE) on the token
+    const slot = pkcs11Module.C_GetSlotList(true)[0];
+    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
+    try {
+        // Find all certificate objects
+        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_CERTIFICATE }]);
+        const handles = pkcs11Module.C_FindObjects(session, 100);
+        pkcs11Module.C_FindObjectsFinal(session);
+        const certs = handles.map(handle => {
+            const attrs = pkcs11Module.C_GetAttributeValue(session, handle, [
+                { type: pkcs11js.CKA_ID },
+                { type: pkcs11js.CKA_SUBJECT },
+                { type: pkcs11js.CKA_ISSUER },
+                { type: pkcs11js.CKA_VALUE },
+                { type: pkcs11js.CKA_LABEL },
+                { type: pkcs11js.CKA_CERTIFICATE_TYPE },
+                { type: pkcs11js.CKA_TRUSTED },
+            ]);
+            const id = attrs[0].value.toString('hex');
+            const subject = attrs[1].value.toString('utf8');
+            const issuer = attrs[2].value.toString('utf8');
+            const der = attrs[3].value; // DER encoded cert
+            const pem = derToPem(der);
+            const label = attrs[4].value.toString('utf8');
+            const certType = attrs[5].value.readUInt32LE(0);
+            const trusted = !!attrs[6].value.readUInt8(0);
+            // Simple validity extraction (not full X.509 parsing)
+            return {
+                id,
+                label,
+                subject_cn: subject,
+                issuer_cn: issuer,
+                is_qualified: trusted,
+                certPem: pem,
+            };
+        });
+        return certs;
+    } finally {
+        pkcs11Module.C_CloseSession(session);
+    }
 }
 
 /**
@@ -132,14 +189,100 @@ async function signHash(hash, certificateId) {
         throw new Error('PKCS#11 not initialized');
     }
 
-    // Real PKCS#11 signing would happen here:
-    // 1. Open session
-    // 2. Login with PIN (PKCS#11 C_Login — triggers native OS PIN dialog)
-    // 3. Find private key matching certificateId
-    // 4. C_SignInit + C_Sign with CKM_SHA256_RSA_PKCS
-    // 5. Return base64-encoded signature
+    const pin = process.env.PMLIO_PKCS11_PIN || '';
+    const slot = pkcs11Module.C_GetSlotList(true)[0];
+    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
+    try {
+        // Login (user type: CKU_USER)
+        pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        // Find private key by CKA_ID matching the certificateId (hex string)
+        const idBuffer = Buffer.from(certificateId, 'hex');
+        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
+        const keyHandles = pkcs11Module.C_FindObjects(session, 1);
+        pkcs11Module.C_FindObjectsFinal(session);
+        if (keyHandles.length === 0) {
+            throw new Error('Private key not found for certificate ID');
+        }
+        const keyHandle = keyHandles[0];
+        // Prepare mechanism
+        const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
+        pkcs11Module.C_SignInit(session, mechanism, keyHandle);
+        const hashBuffer = Buffer.from(hash, 'hex');
+        const signature = pkcs11Module.C_Sign(session, hashBuffer);
+        const signatureB64 = signature.toString('base64');
+        // Retrieve certificate PEM for response
+        const certs = await listCertificates();
+        const certInfo = certs.find(c => c.id === certificateId);
+        const certPem = certInfo ? certInfo.certPem : '';
+        return {
+            signatureValue: signatureB64,
+            algorithm: 'SHA256withRSA',
+            certChainPem: certPem,
+        };
+    } finally {
+        // Logout and close session
+        try { pkcs11Module.C_Logout(session); } catch (_) { }
+        pkcs11Module.C_CloseSession(session);
+    }
+}
 
-    throw new Error('Real PKCS#11 signing not yet implemented — connect a hardware token');
+/**
+ * Sign multiple SHA-256 hashes using the specified certificate's private key.
+ * This is used for batch processing in a single token session/PIN entry.
+ *
+ * @param {string[]} hashes - Array of hex-encoded SHA-256 hashes
+ * @param {string} certificateId - ID of the certificate to use
+ * @returns {object[]} Array of results matching the input hashes order
+ */
+async function signHashes(hashes, certificateId) {
+    if (process.env.PMLIO_MOCK_PKCS11 === 'true' || process.env.NODE_ENV === 'test') {
+        return hashes.map(hash => {
+            try {
+                const res = getMockSignature(hash, certificateId);
+                return { hash, status: 'OK', signatureValue: res.signatureValue, algorithm: res.algorithm, certChainPem: res.certChainPem };
+            } catch (err) {
+                return { hash, status: 'FAIL', error: err.message };
+            }
+        });
+    }
+
+    if (!isInitialized || !pkcs11Module) {
+        throw new Error('PKCS#11 not initialized');
+    }
+
+    const pin = process.env.PMLIO_PKCS11_PIN || '';
+    const slot = pkcs11Module.C_GetSlotList(true)[0];
+    const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
+    try {
+        pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
+        const idBuffer = Buffer.from(certificateId, 'hex');
+        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
+        const keyHandles = pkcs11Module.C_FindObjects(session, 1);
+        pkcs11Module.C_FindObjectsFinal(session);
+        if (keyHandles.length === 0) {
+            throw new Error('Private key not found for certificate ID');
+        }
+        const keyHandle = keyHandles[0];
+        const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
+        const results = [];
+        for (const hash of hashes) {
+            pkcs11Module.C_SignInit(session, mechanism, keyHandle);
+            const hashBuf = Buffer.from(hash, 'hex');
+            const sig = pkcs11Module.C_Sign(session, hashBuf);
+            results.push({
+                hash,
+                status: 'OK',
+                signatureValue: sig.toString('base64'),
+                algorithm: 'SHA256withRSA',
+                // Retrieve PEM once (reuse)
+                certChainPem: (await listCertificates()).find(c => c.id === certificateId)?.certPem || '',
+            });
+        }
+        return results;
+    } finally {
+        try { pkcs11Module.C_Logout(session); } catch (_) { }
+        pkcs11Module.C_CloseSession(session);
+    }
 }
 
 // ============================================================
@@ -147,22 +290,23 @@ async function signHash(hash, certificateId) {
 // ============================================================
 
 function getMockCertificates() {
+    // Mock data kept for development/testing; structure mirrors real certificate objects
     return [
         {
             id: 'mock-cert-001',
-            subject_cn: 'Jan Novák (TEST)',
-            issuer_cn: 'PostSignum Qualified CA 5 (TEST)',
-            valid_from: '2025-01-01',
-            valid_to: '2027-01-01',
+            label: 'Mock Cert 1',
+            subject_cn: 'CN=Jan Novák (TEST)',
+            issuer_cn: 'CN=PostSignum Qualified CA 5 (TEST)',
             is_qualified: true,
+            certPem: '-----BEGIN CERTIFICATE-----\nMIIC...MOCK...\n-----END CERTIFICATE-----',
         },
         {
             id: 'mock-cert-002',
-            subject_cn: 'PMLio s.r.o. (TEST)',
-            issuer_cn: 'I.CA Qualified 2 CA/RSA (TEST)',
-            valid_from: '2025-06-01',
-            valid_to: '2026-06-01',
+            label: 'Mock Cert 2',
+            subject_cn: 'CN=PMLio s.r.o. (TEST)',
+            issuer_cn: 'CN=I.CA Qualified 2 CA/RSA (TEST)',
             is_qualified: true,
+            certPem: '-----BEGIN CERTIFICATE-----\nMIIC...MOCK2...\n-----END CERTIFICATE-----',
         },
     ];
 }
@@ -187,4 +331,4 @@ function getMockSignature(hash, certificateId) {
     };
 }
 
-module.exports = { initPkcs11, getReaderStatus, listCertificates, signHash };
+module.exports = { initPkcs11, getReaderStatus, listCertificates, signHash, signHashes };

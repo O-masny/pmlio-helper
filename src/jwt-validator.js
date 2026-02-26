@@ -19,10 +19,12 @@ const JTI_TTL_MS = 5 * 60 * 1000; // 5 minutes
  */
 const JWT_PUBLIC_KEY = process.env.PMLIO_JWT_PUBLIC_KEY;
 
-if (!JWT_PUBLIC_KEY) {
+if (!JWT_PUBLIC_KEY && process.env.NODE_ENV !== 'test') {
     console.error('CRITICAL: Missing PMLIO_JWT_PUBLIC_KEY environment variable. Challenge JWT cannot be validated.');
     process.exit(1);
 }
+// For tests, use a dummy key if none provided
+const PUBLIC_KEY_TO_USE = JWT_PUBLIC_KEY || 'MOCK_PUBLIC_KEY';
 
 const JWT_AUDIENCE = 'pmlio-signing'; // Matches the audience set by the PHP backend
 
@@ -38,15 +40,18 @@ function validateChallengeJwt(token) {
     purgeExpiredJtis();
 
     // 2. Verify JWT signature + claims using RS256 OpenSSL Public Key
-    const payload = jwt.verify(token, JWT_PUBLIC_KEY, {
+    const payload = jwt.verify(token, PUBLIC_KEY_TO_USE, {
         algorithms: ['RS256'], // Strictly enforce asymmetric cryptography
         audience: JWT_AUDIENCE,
         clockTolerance: 5, // 5 second clock skew tolerance
     });
 
-    // 3. Require hash
-    if (!payload.hash || typeof payload.hash !== 'string') {
-        throw new Error('JWT missing required "hash" claim');
+    // 3. Require hash or hashes (for batch)
+    if (!payload.hash && !payload.hashes) {
+        throw new Error('JWT missing required "hash" or "hashes" claim');
+    }
+    if (payload.hashes && !Array.isArray(payload.hashes)) {
+        throw new Error('JWT "hashes" claim must be an array');
     }
 
     // 4. Require JTI (unique identifier)

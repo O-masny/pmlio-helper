@@ -9,7 +9,8 @@ const https = require('https');
 const cors = require('cors');
 const { ensureCerts } = require('./cert-store');
 const { validateChallengeJwt } = require('./jwt-validator');
-const { listCertificates, signHash, getReaderStatus } = require('./pkcs11');
+const pkcs11 = require('./pkcs11'); // Require the whole module to access signHashes easily
+const { listCertificates, signHash, getReaderStatus } = pkcs11;
 
 const PORT = 14725;
 const HOST = '127.0.0.1';
@@ -99,6 +100,73 @@ function createApp() {
         } catch (err) {
             console.error('[Server] Signing failed:', err.message);
             res.status(500).json({ error: 'Signing failed', detail: err.message });
+        }
+    });
+
+    // ============================================================
+    // POST /sign-many — Sign multiple record hashes (Batch)
+    // ============================================================
+    app.post('/sign-many', async (req, res) => {
+        const { batch_session_id, challenge_jwt, certificate_id, items } = req.body;
+
+        if (!challenge_jwt || !certificate_id || !batch_session_id || !Array.isArray(items)) {
+            return res.status(400).json({ error: 'Missing challenge_jwt, certificate_id, batch_session_id or items array' });
+        }
+
+        // 1. Validate JWT (must contain the correct batch session ID and array of hashes)
+        let payload;
+        try {
+            payload = validateChallengeJwt(challenge_jwt);
+        } catch (err) {
+            console.error('[Server] Batch JWT validation failed:', err.message);
+            return res.status(401).json({ error: 'Invalid challenge', detail: err.message });
+        }
+
+        if (payload.jti !== batch_session_id) {
+            return res.status(401).json({ error: 'Session ID mismatch in JWT' });
+        }
+
+        const requestedHashes = items.map(item => item.record_hash_b64 || item.hash);
+
+        // Verify that the requested hashes match the allowed hashes in the JWT claim
+        if (!payload.hashes) {
+            return res.status(401).json({ error: 'JWT does not contain a hashes array for batch signing' });
+        }
+
+        for (const h of requestedHashes) {
+            if (!payload.hashes.includes(h)) {
+                return res.status(401).json({ error: `Hash ${h} is not authorized by this challenge JWT` });
+            }
+        }
+
+        // 2. Sign all hashes iteratively using PKCS#11
+        try {
+            const results = await pkcs11.signHashes(requestedHashes, certificate_id);
+
+            // Map results back to the original items
+            const mappedResults = items.map((item, index) => {
+                // Ensure order matches requestedHashes
+                const r = results[index];
+                return {
+                    record_id: item.record_id,
+                    status: r.status,
+                    signature_b64: r.signatureValue,
+                    error_code: r.error
+                };
+            });
+
+            // The Cert Chain is extracted from the first successful result
+            const successfulResult = results.find(r => r.status === 'OK');
+
+            res.json({
+                signing_cert_pem: successfulResult ? successfulResult.certChainPem : null,
+                cert_chain_pem: successfulResult ? successfulResult.certChainPem : null,
+                signed_at_utc: new Date().toISOString(),
+                results: mappedResults,
+            });
+        } catch (err) {
+            console.error('[Server] Batch signing failed:', err.message);
+            res.status(500).json({ error: 'Batch signing failed', detail: err.message });
         }
     });
 
