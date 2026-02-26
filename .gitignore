@@ -2,5 +2,7 @@
 node_modules/
 dist/
 .env
+*.pem
+!resources/jwt-public.pem
 *.p12
 certs/
