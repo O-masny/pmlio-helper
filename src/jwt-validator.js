@@ -14,13 +14,17 @@ const usedJtis = new Map(); // jti -> timestamp
 const JTI_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Public key(s) from PMLio backend for verifying challenge JWTs.
- * In production, this would be fetched from a JWKS endpoint.
- *
- * For development/testing, we use a shared HMAC secret.
+ * Public key from PMLio backend for verifying challenge JWTs using RS256.
+ * In a production environment, this should be securely deployed alongside the helper.
  */
-const JWT_SECRET = process.env.PMLIO_JWT_SECRET || 'pmlio-helper-dev-secret-change-in-production';
-const JWT_AUDIENCE = 'pmlio-helper';
+const JWT_PUBLIC_KEY = process.env.PMLIO_JWT_PUBLIC_KEY;
+
+if (!JWT_PUBLIC_KEY) {
+    console.error('CRITICAL: Missing PMLIO_JWT_PUBLIC_KEY environment variable. Challenge JWT cannot be validated.');
+    process.exit(1);
+}
+
+const JWT_AUDIENCE = 'pmlio-signing'; // Matches the audience set by the PHP backend
 
 /**
  * Validate a challenge JWT from the PMLio backend.
@@ -33,8 +37,9 @@ function validateChallengeJwt(token) {
     // 1. Purge expired JTIs
     purgeExpiredJtis();
 
-    // 2. Verify JWT signature + claims
-    const payload = jwt.verify(token, JWT_SECRET, {
+    // 2. Verify JWT signature + claims using RS256 OpenSSL Public Key
+    const payload = jwt.verify(token, JWT_PUBLIC_KEY, {
+        algorithms: ['RS256'], // Strictly enforce asymmetric cryptography
         audience: JWT_AUDIENCE,
         clockTolerance: 5, // 5 second clock skew tolerance
     });
@@ -79,17 +84,24 @@ function resetJtiStore() {
 
 /**
  * Create a test JWT (for development/testing only).
+ * WARNING: Since we moved to RS256, creating a test JWT locally requires a PRIVATE key.
+ * If you do not have a PMLIO_JWT_PRIVATE_KEY injected, this will fall back to using
+ * a mocked HS256 algorithm just for local test endpoints, but production expects RS256.
  */
 function createTestJwt(hash, options = {}) {
     const { v4: uuidv4 } = require('uuid');
+    const privateKey = process.env.PMLIO_JWT_PRIVATE_KEY || 'secret';
+    const alg = process.env.PMLIO_JWT_PRIVATE_KEY ? 'RS256' : 'HS256';
+
     return jwt.sign(
         {
             hash,
             tenant_domain: options.tenantDomain || 'test.pmlio.cz',
             jti: options.jti || uuidv4(),
         },
-        JWT_SECRET,
+        privateKey,
         {
+            algorithm: alg,
             audience: JWT_AUDIENCE,
             expiresIn: options.expiresIn || '120s',
             issuer: 'pmlio-backend',
