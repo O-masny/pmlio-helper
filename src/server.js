@@ -62,8 +62,12 @@ function createApp() {
             const certs = await listCertificates();
             res.json(certs);
         } catch (err) {
-            console.error('[Server] Failed to list certificates:', err.message);
-            res.status(500).json({ error: 'Failed to enumerate certificates', detail: err.message });
+            console.error('[Server] Failed to list certificates:', err);
+            res.status(500).json({
+                error: 'Failed to enumerate certificates',
+                detail: err.message,
+                code: err.code || 'UNKNOWN'
+            });
         }
     });
 
@@ -97,8 +101,12 @@ function createApp() {
                 session_id: payload.jti,
             });
         } catch (err) {
-            console.error('[Server] Signing failed:', err.message);
-            res.status(500).json({ error: 'Signing failed', detail: err.message });
+            console.error('[Server] Signing failed:', err);
+            res.status(500).json({
+                error: 'Signing failed',
+                detail: err.message,
+                code: err.code || 'UNKNOWN'
+            });
         }
     });
 
@@ -164,8 +172,12 @@ function createApp() {
                 results: mappedResults,
             });
         } catch (err) {
-            console.error('[Server] Batch signing failed:', err.message);
-            res.status(500).json({ error: 'Batch signing failed', detail: err.message });
+            console.error('[Server] Batch signing failed:', err);
+            res.status(500).json({
+                error: 'Batch signing failed',
+                detail: err.message,
+                code: err.code || 'UNKNOWN'
+            });
         }
     });
 

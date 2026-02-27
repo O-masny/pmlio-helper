@@ -135,29 +135,38 @@ async function listCertificates() {
     const slot = pkcs11Module.C_GetSlotList(true)[0];
     const session = pkcs11Module.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION);
     try {
-        // Find all certificate objects
-        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_CERTIFICATE }]);
+        // Find all certificate objects (CKO_CERTIFICATE)
+        pkcs11Module.C_FindObjectsInit(session, [
+            { type: pkcs11js.CKA_CLASS, value: pkcs11js.CKO_CERTIFICATE }
+        ]);
         const handles = pkcs11Module.C_FindObjects(session, 100);
         pkcs11Module.C_FindObjectsFinal(session);
         const certs = handles.map(handle => {
-            const attrs = pkcs11Module.C_GetAttributeValue(session, handle, [
-                { type: pkcs11js.CKA_ID },
-                { type: pkcs11js.CKA_SUBJECT },
-                { type: pkcs11js.CKA_ISSUER },
-                { type: pkcs11js.CKA_VALUE },
-                { type: pkcs11js.CKA_LABEL },
-                { type: pkcs11js.CKA_CERTIFICATE_TYPE },
-                { type: pkcs11js.CKA_TRUSTED },
-            ]);
-            const id = attrs[0].value.toString('hex');
-            const subject = attrs[1].value.toString('utf8');
-            const issuer = attrs[2].value.toString('utf8');
-            const der = attrs[3].value; // DER encoded cert
-            const pem = derToPem(der);
-            const label = attrs[4].value.toString('utf8');
-            const certType = attrs[5].value.readUInt32LE(0);
-            const trusted = !!attrs[6].value.readUInt8(0);
-            // Simple validity extraction (not full X.509 parsing)
+            const getAttr = (type) => {
+                try {
+                    const res = pkcs11Module.C_GetAttributeValue(session, handle, [{ type }]);
+                    return res[0].value;
+                } catch (e) {
+                    console.warn(`[PKCS#11] Optional attribute ${type} not found for handle ${handle}`);
+                    return null;
+                }
+            };
+
+            const idBuf = getAttr(pkcs11js.CKA_ID);
+            const subjectBuf = getAttr(pkcs11js.CKA_SUBJECT);
+            const issuerBuf = getAttr(pkcs11js.CKA_ISSUER);
+            const valueBuf = getAttr(pkcs11js.CKA_VALUE);
+            const labelBuf = getAttr(pkcs11js.CKA_LABEL);
+            const trustedBuf = getAttr(pkcs11js.CKA_TRUSTED);
+
+            const id = idBuf ? idBuf.toString('hex') : 'unknown';
+            const subject = subjectBuf ? subjectBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unknown Subject';
+            const issuer = issuerBuf ? issuerBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unknown Issuer';
+            const der = valueBuf;
+            const pem = der ? derToPem(der) : '';
+            const label = labelBuf ? labelBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unnamed Certificate';
+            const trusted = trustedBuf ? !!trustedBuf.readUInt8(0) : false;
+
             return {
                 id,
                 label,
@@ -205,7 +214,10 @@ async function signHash(hash, certificateId) {
         }
         // Find private key by CKA_ID matching the certificateId (hex string)
         const idBuffer = Buffer.from(certificateId, 'hex');
-        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
+        pkcs11Module.C_FindObjectsInit(session, [
+            { type: pkcs11js.CKA_CLASS, value: pkcs11js.CKO_PRIVATE_KEY },
+            { type: pkcs11js.CKA_ID, value: idBuffer }
+        ]);
         const keyHandles = pkcs11Module.C_FindObjects(session, 1);
         pkcs11Module.C_FindObjectsFinal(session);
         if (keyHandles.length === 0) {
@@ -270,7 +282,10 @@ async function signHashes(hashes, certificateId) {
             pkcs11Module.C_Login(session, pkcs11js.CKU_USER, pin);
         }
         const idBuffer = Buffer.from(certificateId, 'hex');
-        pkcs11Module.C_FindObjectsInit(session, [{ type: pkcs11js.CKO_PRIVATE_KEY, value: idBuffer }]);
+        pkcs11Module.C_FindObjectsInit(session, [
+            { type: pkcs11js.CKA_CLASS, value: pkcs11js.CKO_PRIVATE_KEY },
+            { type: pkcs11js.CKA_ID, value: idBuffer }
+        ]);
         const keyHandles = pkcs11Module.C_FindObjects(session, 1);
         pkcs11Module.C_FindObjectsFinal(session);
         if (keyHandles.length === 0) {
