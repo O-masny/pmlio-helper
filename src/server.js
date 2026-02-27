@@ -23,12 +23,27 @@ const ALLOWED_ORIGINS = [
     /^https?:\/\/.*\.pmlio\.cz$/,
     /^https?:\/\/localhost(:\d+)?$/,
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+    // Allow local development domains
+    /^https?:\/\/.*\.test(:\d+)?$/,
+    /^https?:\/\/.*\.localhost(:\d+)?$/,
 ];
 
 function createApp() {
     const app = express();
 
     app.use(express.json({ limit: '1mb' }));
+
+    // Private Network Access (Chrome 104+)
+    // When a public website requests a localhost resource, the browser sends an OPTIONS preflight
+    // with Access-Control-Request-Private-Network: true. The server must respond with
+    // Access-Control-Allow-Private-Network: true, otherwise the request is blocked.
+    app.use((req, res, next) => {
+        if (req.headers['access-control-request-private-network']) {
+            res.setHeader('Access-Control-Allow-Private-Network', 'true');
+        }
+        next();
+    });
+
     app.use(cors({
         origin: (origin, callback) => {
             // Allow requests with no origin (e.g., curl, Electron)

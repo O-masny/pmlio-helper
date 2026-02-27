@@ -25,15 +25,17 @@ Browser (Flutter Web SPA)
 
 ## Rychlý start (Development)
 
+Pro vývoj lokálně se často mění JWT podepisovací klíče na backendu. Abyste nemuseli pokaždé dělat reinstalaci/stažení helperu, můžete mu vložit aktuální veřejný klíč přes proměnnou prostředí. Zkopírujte obsah `storage/app/signing/jwt-public.pem` z backendu a nastavte ho jako env variable.
+
 ```bash
 # Instalace závislostí
 npm install
 
-# Spuštění testů (bez HW tokenu — mock mód)
-npm test
+# Spuštění Electron app s injektovaným aktuálním veřejným klíčem z backendu
+PMLIO_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----" npm start
 
-# Spuštění Electron app
-npm start
+# Nebo pro pouhé testování (bez HW tokenu — mock mód)
+npm test
 ```
 
 ## API Endpoints
