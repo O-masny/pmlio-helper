@@ -36,31 +36,94 @@ function derToPem(der) {
 }
 
 /**
- * Known PKCS#11 library paths per platform.
+ * Dynamic discovery of PKCS#11 libraries.
+ * Scans known locations for Czech Market & EU Tokens (I.CA, ProID, SafeNet, Bit4Id, etc.)
  */
-const PKCS11_LIBS = {
-    win32: [
-        'C:\\Windows\\System32\\eTPKCS11.dll',                                      // SafeNet eToken (legacy)
-        'C:\\Windows\\System32\\eToken.dll',                                        // SafeNet eToken (newer)
-        'C:\\Program Files\\SafeNet\\Authentication\\SAC\\x64\\IDPrimePKCS11.dll',  // SafeNet SAC 10.x+ (64-bit)
-        'C:\\Program Files (x86)\\SafeNet\\Authentication\\SAC\\IDPrimePKCS11.dll', // SafeNet SAC 10.x+ (32-bit)
-        'C:\\Windows\\System32\\bit4ipki.dll',                                      // Bit4Id
-        'C:\\Program Files\\OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll',     // OpenSC
-    ],
-    darwin: [
-        '/usr/local/lib/opensc-pkcs11.so',
-        '/Library/Frameworks/eToken.framework/Versions/Current/libeToken.dylib',
-        '/usr/local/lib/libeToken.dylib',                                           // SafeNet SAC macOS
-    ],
-    linux: [
-        '/usr/lib/opensc-pkcs11.so',
-        '/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so',
-        '/usr/lib/libeToken.so',                                                    // SafeNet SAC Linux
-    ],
-};
+function findPkcs11Libs() {
+    const fs = require('fs');
+    const path = require('path');
+    const libs = [];
+
+    // 1. Environment Variable Override (Highest Priority)
+    if (process.env.PMLIO_PKCS11_LIB && fs.existsSync(process.env.PMLIO_PKCS11_LIB)) {
+        libs.push(process.env.PMLIO_PKCS11_LIB);
+    }
+
+    // 2. Windows Libraries (Czech Market & Common EU Tokens)
+    if (process.platform === 'win32') {
+        const sys32 = process.env.windir ? path.join(process.env.windir, 'System32') : 'C:\\Windows\\System32';
+        const sysWow = process.env.windir ? path.join(process.env.windir, 'SysWOW64') : 'C:\\Windows\\SysWOW64';
+
+        const winConfigDirs = [sys32, sysWow];
+
+        // Comprehensive list of DLL names typically deployed to System32 by token installers
+        const commonDlls = [
+            'eTPKCS11.dll', 'eToken.dll',                 // SafeNet / eToken
+            'IDPrimePKCS11.dll', 'IDPrimePKCS1164.dll',   // SafeNet / Thales
+            'bit4ipki.dll', 'bit4opki.dll', 'bit4xpki.dll', // Bit4Id / miniLector
+            'icapki.dll', 'IcaRS11.dll', 'IcaRS11_64.dll', 'IcaPkcs11.dll', // I.CA (Czech)
+            'proid11.dll', 'proid11_64.dll', 'cryptoos11.dll', // ProID / Monet+ (Czech)
+            'gclib.dll', 'siecap11.dll',                  // Gemalto
+            'aetpkss1.dll', 'aetpkss1_64.dll',            // SafeSign / AET
+            'ASEPKCS.dll',                                // Athena
+            'opensc-pkcs11.dll',                          // OpenSC generic
+            'cvP11.dll',                                  // Cryptovision
+        ];
+
+        winConfigDirs.forEach(dir => {
+            commonDlls.forEach(dll => {
+                const fullPath = path.join(dir, dll);
+                if (fs.existsSync(fullPath)) libs.push(fullPath);
+            });
+        });
+
+        // Common specific sub-paths in Program Files
+        const prog = process.env.ProgramFiles || 'C:\\Program Files';
+        const prog86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+
+        const specificPaths = [
+            'SafeNet\\Authentication\\SAC\\x64\\IDPrimePKCS11.dll',
+            'SafeNet\\Authentication\\SAC\\IDPrimePKCS11.dll',
+            'OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll',
+            'Bit4Id\\miniLector\\bit4ipki.dll',
+            'I.CA\\SecureStore\\icapki.dll',
+            'ProID\\proid11.dll',
+        ];
+
+        [prog, prog86].forEach(baseDir => {
+            specificPaths.forEach(sp => {
+                const fullPath = path.join(baseDir, sp);
+                if (fs.existsSync(fullPath)) libs.push(fullPath);
+            });
+        });
+    }
+
+    // 3. macOS Libraries
+    else if (process.platform === 'darwin') {
+        [
+            '/usr/local/lib/opensc-pkcs11.so',
+            '/Library/Frameworks/eToken.framework/Versions/Current/libeToken.dylib',
+            '/usr/local/lib/libeToken.dylib',
+            '/usr/local/lib/libbit4ipki.dylib',
+        ].forEach(p => { if (fs.existsSync(p)) libs.push(p); });
+    }
+
+    // 4. Linux Libraries
+    else if (process.platform === 'linux') {
+        [
+            '/usr/lib/opensc-pkcs11.so',
+            '/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so',
+            '/usr/lib/libeToken.so',
+            '/usr/lib/libbit4ipki.so',
+        ].forEach(p => { if (fs.existsSync(p)) libs.push(p); });
+    }
+
+    // Return unique values only
+    return [...new Set(libs)];
+}
 
 /**
- * Initialize PKCS#11 module — detect reader and token.
+ * Initialize PKCS#11 module — detect reader and token dynamically.
  */
 async function initPkcs11() {
     // In test/dev mode without real hardware, use mock
@@ -79,8 +142,17 @@ async function initPkcs11() {
         const pkcs11js = require('pkcs11js');
         pkcs11Module = new pkcs11js.PKCS11();
 
-        const libs = PKCS11_LIBS[process.platform] || [];
-        for (const lib of libs) {
+        const libsToTry = findPkcs11Libs();
+        let scannedCount = libsToTry.length;
+
+        if (scannedCount === 0) {
+            console.warn('[PKCS#11] No known PKCS#11 libraries found on this system');
+            return false;
+        }
+
+        console.log(`[PKCS#11] Discovered ${scannedCount} potential libraries. Probing...`);
+
+        for (const lib of libsToTry) {
             try {
                 pkcs11Module.load(lib);
                 pkcs11Module.C_Initialize();
@@ -89,29 +161,34 @@ async function initPkcs11() {
                 const slots = pkcs11Module.C_GetSlotList(false);
                 if (slots.length > 0) {
                     const slotInfo = pkcs11Module.C_GetSlotInfo(slots[0]);
-                    const tokenInfo = pkcs11Module.C_GetTokenInfo(slots[0]);
 
                     readerStatus = {
                         readerConnected: true,
                         tokenPresent: (slotInfo.flags & 0x02) !== 0, // CKF_TOKEN_PRESENT
                         readerName: slotInfo.slotDescription?.trim() || 'Unknown Reader',
+                        activeLibrary: lib
                     };
 
-                    console.log(`[PKCS#11] Loaded: ${lib}`);
-                    console.log(`[PKCS#11] Reader: ${readerStatus.readerName}`);
+                    console.log(`[PKCS#11] Success! Bound to: ${lib}`);
+                    console.log(`[PKCS#11] Reader: ${readerStatus.readerName}, Token Present: ${readerStatus.tokenPresent}`);
                     isInitialized = true;
                     return true;
+                } else {
+                    // This library works but has no slots attached. We close it safely and check the next one.
+                    try { pkcs11Module.C_Finalize(); } catch (_) { }
+                    try { pkcs11Module.close(); } catch (_) { }
                 }
             } catch (e) {
-                console.warn(`[PKCS#11] Failed to load ${lib}: ${e.message}`);
+                // If it fails to load or init, silently close and continue trying others
+                try { pkcs11Module.close(); } catch (_) { }
                 continue;
             }
         }
 
-        console.warn('[PKCS#11] No PKCS#11 library or reader found');
+        console.warn(`[PKCS#11] Probed ${scannedCount} libraries, but no reader was found.`);
         return false;
     } catch (err) {
-        console.error('[PKCS#11] Init failed:', err.message);
+        console.error('[PKCS#11] Core init failed:', err.message);
         return false;
     }
 }
