@@ -197,6 +197,13 @@ async function initPkcs11() {
  * Get current reader status.
  */
 function getReaderStatus() {
+    if (process.env.PMLIO_MOCK_PKCS11 === 'true' || process.env.NODE_ENV === 'test') {
+        return {
+            readerConnected: true,
+            tokenPresent: true,
+            readerName: 'Mock SmartCard Reader (PMLIO_MOCK_PKCS11)',
+        };
+    }
     return { ...readerStatus };
 }
 

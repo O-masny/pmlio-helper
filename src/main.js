@@ -23,6 +23,13 @@ if (process.platform === 'darwin') {
 app.whenReady().then(async () => {
   console.log('[PMLio Helper] Starting...');
 
+  // Enable auto-start by default (tenant convenience)
+  // This registers the app in Windows startup (HKCU\...\Run)
+  if (!app.getLoginItemSettings().openAtLogin) {
+    app.setLoginItemSettings({ openAtLogin: true });
+    console.log('[PMLio Helper] Auto-start enabled (first launch).');
+  }
+
   // 1. Initialize PKCS#11 (detect readers) — non-fatal
   let pkcs11Ready = false;
   try {
@@ -45,15 +52,23 @@ app.whenReady().then(async () => {
 
   // 4. Update tray based on reader status
   const status = getReaderStatus();
-  updateTrayStatus(server ? (status.readerConnected ? 'connected' : 'idle') : 'error');
+  const isMock = process.env.PMLIO_MOCK_PKCS11 === 'true' || process.env.NODE_ENV === 'test';
+
+  setTimeout(() => {
+    if (isMock) {
+      updateTrayStatus('connected');
+    } else {
+      updateTrayStatus(server ? (status.readerConnected ? 'connected' : 'idle') : 'error');
+    }
+  }, 500);
 
   // 5. If no token found at startup, start periodic re-scan (every 5s)
   //    so hot-plugged USB tokens get picked up automatically
-  if (!pkcs11Ready || !status.tokenPresent) {
+  if (!isMock && (!pkcs11Ready || !status.tokenPresent)) {
     startRescan(5000);
   }
 
-  console.log(`[PMLio Helper] Ready. PKCS#11: ${pkcs11Ready ? 'OK' : 'No reader found — re-scan active'}`);
+  console.log(`[PMLio Helper] Ready. PKCS#11: ${isMock ? 'MOCK' : (pkcs11Ready ? 'OK' : 'No reader found — re-scan active')}`);
 });
 
 app.on('window-all-closed', (e) => {

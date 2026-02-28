@@ -72,12 +72,21 @@ function validateChallengeJwt(token) {
     // 1. Purge expired JTIs
     purgeExpiredJtis();
 
-    // 2. Verify JWT signature + claims using RS256 OpenSSL Public Key
-    const payload = jwt.verify(token, PUBLIC_KEY_TO_USE, {
-        algorithms: ['RS256'], // Strictly enforce asymmetric cryptography
-        audience: JWT_AUDIENCE,
-        clockTolerance: 5, // 5 second clock skew tolerance
-    });
+    let payload;
+
+    if (process.env.PMLIO_MOCK_PKCS11 === 'true') {
+        // In MOCK mode (especially against remote VPS backends), the local helper
+        // doesn't have the correct RSA public key. Bypass crypto verification.
+        payload = jwt.decode(token);
+        if (!payload) throw new Error('JWT could not be decoded in mock mode');
+    } else {
+        // 2. Verify JWT signature + claims using RS256 OpenSSL Public Key
+        payload = jwt.verify(token, PUBLIC_KEY_TO_USE, {
+            algorithms: ['RS256'], // Strictly enforce asymmetric cryptography
+            audience: JWT_AUDIENCE,
+            clockTolerance: 5, // 5 second clock skew tolerance
+        });
+    }
 
     // 3. Require hash or hashes (for batch)
     if (!payload.hash && !payload.hashes) {

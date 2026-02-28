@@ -21,6 +21,8 @@ let server = null;
  */
 const ALLOWED_ORIGINS = [
     /^https?:\/\/.*\.pmlio\.cz$/,
+    /^https?:\/\/.*\.shopio\.cz$/,
+    /^https?:\/\/.*\.brandtopia\.cz$/,
     /^https?:\/\/localhost(:\d+)?$/,
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
     // Allow local development domains

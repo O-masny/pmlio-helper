@@ -54,9 +54,19 @@ function updateTrayMenu(status) {
         idle: '⚪ Čeká na čtečku',
     };
 
+    const autoStartEnabled = app.getLoginItemSettings().openAtLogin;
+
     const menu = Menu.buildFromTemplate([
         { label: statusLabels[status] || 'Status', enabled: false },
         { type: 'separator' },
+        {
+            label: 'Spustit při startu',
+            type: 'checkbox',
+            checked: autoStartEnabled,
+            click: (menuItem) => {
+                app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+            },
+        },
         { label: 'Zobrazit certifikáty', click: () => showCertificates() },
         { type: 'separator' },
         {
@@ -90,7 +100,7 @@ function showCertificates() {
     const { listCertificates, getReaderStatus } = require('./pkcs11');
 
     const status = getReaderStatus();
-    if (!status.readerConnected) {
+    if (!status.readerConnected && process.env.PMLIO_MOCK_PKCS11 !== 'true' && process.env.NODE_ENV !== 'test') {
         dialog.showMessageBox({
             type: 'warning',
             title: 'PMLio Helper — Certifikáty',
