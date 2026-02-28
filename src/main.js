@@ -7,7 +7,7 @@
 const { app, BrowserWindow } = require('electron');
 const { createTray, updateTrayStatus } = require('./tray');
 const { startServer, stopServer } = require('./server');
-const { initPkcs11, getReaderStatus } = require('./pkcs11');
+const { initPkcs11, getReaderStatus, startRescan, stopRescan } = require('./pkcs11');
 
 // Prevent multiple instances
 const gotLock = app.requestSingleInstanceLock();
@@ -47,7 +47,13 @@ app.whenReady().then(async () => {
   const status = getReaderStatus();
   updateTrayStatus(server ? (status.readerConnected ? 'connected' : 'idle') : 'error');
 
-  console.log(`[PMLio Helper] Ready. PKCS#11: ${pkcs11Ready ? 'OK' : 'No reader found'}`);
+  // 5. If no token found at startup, start periodic re-scan (every 5s)
+  //    so hot-plugged USB tokens get picked up automatically
+  if (!pkcs11Ready || !status.tokenPresent) {
+    startRescan(5000);
+  }
+
+  console.log(`[PMLio Helper] Ready. PKCS#11: ${pkcs11Ready ? 'OK' : 'No reader found — re-scan active'}`);
 });
 
 app.on('window-all-closed', (e) => {
@@ -56,5 +62,6 @@ app.on('window-all-closed', (e) => {
 });
 
 app.on('before-quit', () => {
+  stopRescan();
   stopServer();
 });

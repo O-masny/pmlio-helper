@@ -40,17 +40,22 @@ function derToPem(der) {
  */
 const PKCS11_LIBS = {
     win32: [
-        'C:\\Windows\\System32\\eTPKCS11.dll',          // SafeNet eToken
-        'C:\\Windows\\System32\\bit4ipki.dll',           // Bit4Id
-        'C:\\Program Files\\OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll',
+        'C:\\Windows\\System32\\eTPKCS11.dll',                                      // SafeNet eToken (legacy)
+        'C:\\Windows\\System32\\eToken.dll',                                        // SafeNet eToken (newer)
+        'C:\\Program Files\\SafeNet\\Authentication\\SAC\\x64\\IDPrimePKCS11.dll',  // SafeNet SAC 10.x+ (64-bit)
+        'C:\\Program Files (x86)\\SafeNet\\Authentication\\SAC\\IDPrimePKCS11.dll', // SafeNet SAC 10.x+ (32-bit)
+        'C:\\Windows\\System32\\bit4ipki.dll',                                      // Bit4Id
+        'C:\\Program Files\\OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll',     // OpenSC
     ],
     darwin: [
         '/usr/local/lib/opensc-pkcs11.so',
         '/Library/Frameworks/eToken.framework/Versions/Current/libeToken.dylib',
+        '/usr/local/lib/libeToken.dylib',                                           // SafeNet SAC macOS
     ],
     linux: [
         '/usr/lib/opensc-pkcs11.so',
         '/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so',
+        '/usr/lib/libeToken.so',                                                    // SafeNet SAC Linux
     ],
 };
 
@@ -98,7 +103,7 @@ async function initPkcs11() {
                     return true;
                 }
             } catch (e) {
-                // Try next library
+                console.warn(`[PKCS#11] Failed to load ${lib}: ${e.message}`);
                 continue;
             }
         }
@@ -360,4 +365,45 @@ function getMockSignature(hash, certificateId) {
     };
 }
 
-module.exports = { initPkcs11, getReaderStatus, listCertificates, signHash, signHashes };
+// ============================================================
+// Periodic re-scan — detect tokens plugged in after startup
+// ============================================================
+let rescanInterval = null;
+
+/**
+ * Start periodic re-scanning for newly connected readers/tokens.
+ * Runs every `intervalMs` (default 5 s). Stops once a token is found.
+ */
+function startRescan(intervalMs = 5000) {
+    if (rescanInterval) return; // already running
+    console.log(`[PKCS#11] Starting periodic re-scan every ${intervalMs / 1000}s`);
+    rescanInterval = setInterval(async () => {
+        if (isInitialized && readerStatus.tokenPresent) {
+            // Token already detected — stop polling
+            clearInterval(rescanInterval);
+            rescanInterval = null;
+            return;
+        }
+        console.log('[PKCS#11] Re-scanning for readers/tokens…');
+        const found = await initPkcs11();
+        if (found && readerStatus.tokenPresent) {
+            console.log('[PKCS#11] Token detected on re-scan!');
+            clearInterval(rescanInterval);
+            rescanInterval = null;
+            // Notify tray if available (lazy-require to avoid circular deps)
+            try {
+                const { updateTrayStatus } = require('./tray');
+                updateTrayStatus('connected');
+            } catch (_) { /* tray not initialised yet */ }
+        }
+    }, intervalMs);
+}
+
+function stopRescan() {
+    if (rescanInterval) {
+        clearInterval(rescanInterval);
+        rescanInterval = null;
+    }
+}
+
+module.exports = { initPkcs11, getReaderStatus, listCertificates, signHash, signHashes, startRescan, stopRescan };
