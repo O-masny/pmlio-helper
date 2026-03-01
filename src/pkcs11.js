@@ -241,6 +241,18 @@ async function listCertificates() {
                 }
             };
 
+            /**
+             * Safely convert a PKCS#11 buffer to a human-readable UTF-8 string.
+             * Strips null bytes and non-printable characters to prevent garbled output.
+             */
+            const safeBufferToUtf8 = (buf) => {
+                if (!buf || !Buffer.isBuffer(buf)) return null;
+                const str = buf.toString('utf8').replace(/\0/g, '').trim();
+                // Check if result contains mostly printable ASCII/UTF-8
+                const printable = str.replace(/[^\x20-\x7E\u00C0-\u024F\u0400-\u04FF]/g, '');
+                return printable.length > str.length * 0.5 ? str : null;
+            };
+
             const idBuf = getAttr(pkcs11js.CKA_ID);
             const subjectBuf = getAttr(pkcs11js.CKA_SUBJECT);
             const issuerBuf = getAttr(pkcs11js.CKA_ISSUER);
@@ -249,22 +261,63 @@ async function listCertificates() {
             const trustedBuf = getAttr(pkcs11js.CKA_TRUSTED);
 
             const id = idBuf ? idBuf.toString('hex') : 'unknown';
-            const subject = subjectBuf ? subjectBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unknown Subject';
-            const issuer = issuerBuf ? issuerBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unknown Issuer';
             const der = valueBuf;
             const pem = der ? derToPem(der) : '';
-            const label = labelBuf ? labelBuf.toString('utf8').replace(/\0/g, '').trim() : 'Unnamed Certificate';
+            const label = labelBuf ? safeBufferToUtf8(labelBuf) || 'Unnamed Certificate' : 'Unnamed Certificate';
             const trusted = trustedBuf ? !!trustedBuf.readUInt8(0) : false;
+
+            let parsedSubject = 'Unknown Subject';
+            let parsedIssuer = 'Unknown Issuer';
+
+            if (pem) {
+                try {
+                    const crypto = require('crypto');
+                    if (crypto.X509Certificate) {
+                        const x509 = new crypto.X509Certificate(pem);
+                        const parseDN = (dnString) => {
+                            if (!dnString) return '';
+                            const parts = dnString.split('\n');
+                            for (const p of parts) {
+                                if (p.trim().startsWith('CN=')) {
+                                    return p.trim().substring(3);
+                                }
+                            }
+                            return dnString.replace(/\n/g, ', ');
+                        };
+                        parsedSubject = parseDN(x509.subject) || label || 'Unknown Subject';
+                        parsedIssuer = parseDN(x509.issuer) || 'Unknown Issuer';
+                    } else {
+                        const forge = require('node-forge');
+                        const cert = forge.pki.certificateFromPem(pem);
+                        const getCN = (fields) => {
+                            const attrs = cert[fields] ? cert[fields].attributes : [];
+                            const cnAttr = attrs.find(a => a.shortName === 'CN' || a.name === 'commonName');
+                            return cnAttr ? cnAttr.value : null;
+                        };
+                        parsedSubject = getCN('subject') || label || 'Unknown Subject';
+                        parsedIssuer = getCN('issuer') || 'Unknown Issuer';
+                    }
+                } catch (e) {
+                    console.warn(`[PKCS#11] Failed to parse X509 properties: ${e.message}`);
+                    // Fallback: use label for subject, never raw buffer
+                    parsedSubject = label || 'Unknown Subject';
+                    parsedIssuer = 'Unknown Issuer';
+                }
+            } else {
+                // No DER value available — use label as subject, never raw buffer
+                parsedSubject = label || 'Unknown Subject';
+                parsedIssuer = 'Unknown Issuer';
+            }
 
             return {
                 id,
                 label,
-                subject_cn: subject,
-                issuer_cn: issuer,
+                subject_cn: parsedSubject,
+                issuer_cn: parsedIssuer,
                 is_qualified: trusted,
                 certPem: pem,
             };
-        });
+        }).filter(Boolean);
         return certs;
     } finally {
         pkcs11Module.C_CloseSession(session);

@@ -89,11 +89,17 @@ function validateChallengeJwt(token) {
     }
 
     // 3. Require hash or hashes (for batch)
-    if (!payload.hash && !payload.hashes) {
+    // Accept both 'hash' and 'record_hash' (backend uses 'record_hash')
+    const effectiveHash = payload.hash || payload.record_hash;
+    if (!effectiveHash && !payload.hashes) {
         throw new Error('JWT missing required "hash" or "hashes" claim');
     }
     if (payload.hashes && !Array.isArray(payload.hashes)) {
         throw new Error('JWT "hashes" claim must be an array');
+    }
+    // Normalize: ensure payload.hash is always set for downstream consumers
+    if (!payload.hash && effectiveHash) {
+        payload.hash = effectiveHash;
     }
 
     // 4. Require JTI (unique identifier)
